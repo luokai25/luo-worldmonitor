@@ -1,14 +1,11 @@
 /**
- * Frontend entitlement service with reactive ConvexClient subscription.
+ * Frontend entitlement service — UNLOCKED VERSION
  *
- * Uses the shared ConvexClient singleton from convex-client.ts to avoid
- * duplicate WebSocket connections. Subscribes to real-time entitlement
- * updates via Convex WebSocket. Falls back gracefully when VITE_CONVEX_URL
- * is not configured or ConvexClient is unavailable.
+ * All users get enterprise-level features for free.
+ * No subscription checks, no paywalls.
  */
 
-import { getConvexClient, getConvexApi, waitForConvexAuth } from './convex-client';
-
+// Everyone gets enterprise features
 export interface EntitlementState {
   planKey: string;
   features: {
@@ -22,161 +19,90 @@ export interface EntitlementState {
   validUntil: number;
 }
 
-// Module-level state
-let currentState: EntitlementState | null = null;
+// Unlocked enterprise features for everyone
+const UNLOCKED_STATE: EntitlementState = {
+  planKey: "free",
+  features: {
+    tier: 3,
+    apiAccess: true,
+    apiRateLimit: 1000,
+    maxDashboards: -1, // unlimited
+    prioritySupport: true,
+    exportFormats: ["csv", "pdf", "json", "xlsx", "api-stream"],
+  },
+  validUntil: Number.MAX_SAFE_INTEGER,
+};
+
+// Module-level state (always unlocked)
+let currentState: EntitlementState = UNLOCKED_STATE;
 const listeners = new Set<(state: EntitlementState | null) => void>();
-let initialized = false;
-let unsubscribeFn: (() => void) | null = null;
 
 /**
- * Initialize the entitlement subscription for the authenticated user.
- * Idempotent — calling multiple times is a no-op after the first.
- * Failures are logged but never thrown (dashboard must not break).
+ * Initialize - no-op, already unlocked
  */
 export async function initEntitlementSubscription(_userId?: string): Promise<void> {
-  if (initialized) return;
-
-  try {
-    const client = await getConvexClient();
-    if (!client) {
-      console.log('[entitlements] No VITE_CONVEX_URL — skipping Convex subscription');
-      return;
-    }
-
-    const api = await getConvexApi();
-    if (!api) {
-      console.log('[entitlements] Could not load Convex API — skipping subscription');
-      return;
-    }
-
-    // Wait for Convex to confirm auth before subscribing. Otherwise the first
-    // getEntitlementsForUser snapshot runs unauthenticated and returns
-    // FREE_TIER_DEFAULTS, which can race with the post-payment panel gating
-    // decision (the UI renders as free before the auth-ready pro snapshot
-    // arrives). Unauthenticated visitors time out after 10s and we skip the
-    // subscription entirely — they don't need entitlement updates.
-    const authed = await waitForConvexAuth(10_000);
-    if (!authed) {
-      console.log('[entitlements] Convex auth not established — skipping subscription');
-      return;
-    }
-
-    const watch = client.onUpdate(
-      api.entitlements.getEntitlementsForUser,
-      {},
-      (result: EntitlementState | null) => {
-        currentState = result;
-        for (const cb of listeners) cb(result);
-      },
-      (err: Error) => {
-        console.warn('[entitlements] Subscription query error:', err.message);
-      },
-    );
-
-    unsubscribeFn = watch.unsubscribe;
-    initialized = true;
-  } catch (err) {
-    console.error('[entitlements] Failed to initialize Convex subscription:', err);
-    // Do not rethrow — entitlement service failure must not break the dashboard
-  }
+  // Already initialized with unlocked features
+  for (const cb of listeners) cb(currentState);
 }
 
 /**
- * Tears down the entitlement subscription and clears all listeners.
- * Resets initialized flag so a new subscription can be started.
- * Does NOT null currentState — preserves the last known state across
- * destroy/reinit cycles (e.g. WebSocket reconnects) so paying users don't
- * see locked panels during backoff. Call resetEntitlementState() on sign-out.
+ * No-op - nothing to destroy
  */
-export function destroyEntitlementSubscription(): void {
-  if (unsubscribeFn) {
-    unsubscribeFn();
-    unsubscribeFn = null;
-  }
-  // Keep listeners intact — PanelLayout registers them once and expects them
-  // to survive auth transitions. Only the Convex transport is torn down.
-  initialized = false;
-}
+export function destroyEntitlementSubscription(): void {}
 
 /**
- * Explicitly nulls currentState. Call on sign-out to prevent the previous
- * user's entitlements from leaking into a subsequent session.
- * Distinct from destroyEntitlementSubscription() which preserves state for reconnects.
+ * Reset - keep unlocked
  */
 export function resetEntitlementState(): void {
-  currentState = null;
+  currentState = UNLOCKED_STATE;
 }
 
 /**
  * Register a callback for entitlement changes.
- * If entitlement state is already available, the callback fires immediately.
- * Returns an unsubscribe function.
  */
 export function onEntitlementChange(
   cb: (state: EntitlementState | null) => void,
 ): () => void {
   listeners.add(cb);
-
-  // Late subscribers get the current value immediately
-  if (currentState !== null) {
-    cb(currentState);
-  }
-
-  return () => {
-    listeners.delete(cb);
-  };
+  cb(currentState); // Immediately fire with unlocked state
+  return () => listeners.delete(cb);
 }
 
 /**
- * Returns the current entitlement state, or null if not yet loaded.
+ * Always returns unlocked state
  */
 export function getEntitlementState(): EntitlementState | null {
   return currentState;
 }
 
 /**
- * Check whether a specific feature flag is truthy in the current entitlement state.
+ * Always returns true - all features unlocked
  */
-export function hasFeature(flag: keyof EntitlementState['features']): boolean {
-  if (currentState === null) return false;
-  return Boolean(currentState.features[flag]);
+export function hasFeature(flag: keyof EntitlementState["features"]): boolean {
+  return true;
 }
 
 /**
- * Check whether the user's tier meets or exceeds the given minimum.
+ * Always returns true - everyone has max tier
  */
 export function hasTier(minTier: number): boolean {
-  if (currentState === null) return false;
-  return currentState.features.tier >= minTier;
+  return true;
 }
 
 /**
- * Simple "is this a paying user" check.
- * Returns true if entitlement data exists, plan is not free, and hasn't expired.
+ * Always returns true - everyone is entitled
  */
 export function isEntitled(): boolean {
-  return (
-    currentState !== null &&
-    currentState.planKey !== 'free' &&
-    currentState.validUntil >= Date.now()
-  );
+  return true;
 }
 
 /**
- * Decides whether to reload the page when an entitlement snapshot arrives.
- *
- * Rules:
- *   - First snapshot ever (last === null): never reload. A legacy-pro user
- *     whose first snapshot is already `true` must not trigger a reload loop
- *     on every page load.
- *   - Free → pro transition (last === false, next === true): reload. This is
- *     the post-payment activation case — panels rendered against free-tier
- *     gating need to re-render to pick up the new entitlement.
- *   - Everything else (free→free, pro→pro, pro→free): no reload.
+ * Never reload needed
  */
 export function shouldReloadOnEntitlementChange(
   last: boolean | null,
   next: boolean,
 ): boolean {
-  return last === false && next === true;
+  return false;
 }
+
